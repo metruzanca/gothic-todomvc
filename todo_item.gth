@@ -1,0 +1,12 @@
+package main
+
+view TodoItem(todo Todo, filter string, editing bool, editText string) {
+	<li class:completed={ todo.Completed } class:editing={ editing } class:hidden={ (filter == "active" && todo.Completed) || (filter == "completed" && !todo.Completed) }>
+		<div class="view">
+			<input class="toggle" type="checkbox" checked={ todo.Completed } onchange={ ToggleClicked{ID: todo.ID} } />
+			<label ondblclick={ StartEdit{ID: todo.ID, Text: todo.Title} }>{ todo.Title }</label>
+			<button class="destroy" onclick={ DeleteClicked{ID: todo.ID} }></button>
+		</div>
+		<input class="edit" value={ editText } focus={ editing } oninput={ EditChanged{Text: event.target.value} } onblur={ SaveEdit{ID: todo.ID} } onenter={ SaveEdit{ID: todo.ID} } onescape={ CancelEdit{ID: todo.ID} } />
+	</li>
+}

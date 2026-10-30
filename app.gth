@@ -1,0 +1,226 @@
+package main
+
+import (
+	"context"
+
+	"github.com/metruzanca/gothic"
+)
+
+type Todo struct {
+	ID        int64
+	Title     string
+	Completed bool
+}
+
+type TodoData struct {
+	Todos          []Todo
+	ActiveCount    int
+	CompletedCount int
+	HasTodos       bool
+	HasCompleted   bool
+	AllDone        bool
+	ItemWord       string
+}
+
+type Model struct {
+	Draft          string
+	Todos          []Todo
+	ActiveCount    int
+	CompletedCount int
+	HasTodos       bool
+	HasCompleted   bool
+	AllDone        bool
+	ItemWord       string
+	Filter         string
+	EditingID      int64
+	EditText       string
+	Failure        string
+}
+
+func NewModel(data TodoData) Model {
+	return Model{
+		Todos:          data.Todos,
+		ActiveCount:    data.ActiveCount,
+		CompletedCount: data.CompletedCount,
+		HasTodos:       data.HasTodos,
+		HasCompleted:   data.HasCompleted,
+		AllDone:        data.AllDone,
+		ItemWord:       data.ItemWord,
+		Filter:         "all",
+	}
+}
+
+type DraftChanged struct{ Text string }
+type AddClicked struct{}
+type ToggleClicked struct{ ID int64 }
+type DeleteClicked struct{ ID int64 }
+type ToggleAll struct{ Checked bool }
+type ClearCompletedClicked struct{}
+type StartEdit struct {
+	ID   int64
+	Text string
+}
+type EditChanged struct{ Text string }
+type SaveEdit struct{ ID int64 }
+type CancelEdit struct{ ID int64 }
+type TodosLoaded struct{ Data TodoData }
+type TodoFailed struct{ Message string }
+type HashChanged struct{ Hash string }
+
+type Procedures interface {
+	gothic.RPCService
+	ListTodos(ctx context.Context) (TodoData, error)
+	AddTodo(ctx context.Context, title string) error
+	SetTodoTitle(ctx context.Context, id int64, title string) error
+	ToggleTodo(ctx context.Context, id int64) error
+	SetAllCompleted(ctx context.Context, completed bool) error
+	DeleteTodo(ctx context.Context, id int64) error
+	ClearCompleted(ctx context.Context) error
+}
+
+func (m Model) Init() gothic.Cmd {
+	return loadTodos
+}
+
+func (m Model) Update(msg gothic.Msg) (gothic.Model, gothic.Cmd) {
+	switch msg := msg.(type) {
+	case HashChanged:
+		m.Filter = "all"
+		if msg.Hash == "#/active" {
+			m.Filter = "active"
+		}
+		if msg.Hash == "#/completed" {
+			m.Filter = "completed"
+		}
+	case DraftChanged:
+		m.Draft = msg.Text
+	case AddClicked:
+		title := m.Draft
+		if title == "" {
+			return m, nil
+		}
+		m.Draft = ""
+		return m, func() gothic.Msg {
+			err := AddTodo(title)
+			if err != nil {
+				return TodoFailed{Message: err.Error()}
+			}
+			return loadTodos()
+		}
+	case ToggleClicked:
+		id := msg.ID
+		return m, func() gothic.Msg {
+			err := ToggleTodo(id)
+			if err != nil {
+				return TodoFailed{Message: err.Error()}
+			}
+			return loadTodos()
+		}
+	case ToggleAll:
+		checked := msg.Checked
+		return m, func() gothic.Msg {
+			err := SetAllCompleted(checked)
+			if err != nil {
+				return TodoFailed{Message: err.Error()}
+			}
+			return loadTodos()
+		}
+	case ClearCompletedClicked:
+		return m, func() gothic.Msg {
+			err := ClearCompleted()
+			if err != nil {
+				return TodoFailed{Message: err.Error()}
+			}
+			return loadTodos()
+		}
+	case DeleteClicked:
+		id := msg.ID
+		return m, func() gothic.Msg {
+			err := DeleteTodo(id)
+			if err != nil {
+				return TodoFailed{Message: err.Error()}
+			}
+			return loadTodos()
+		}
+	case StartEdit:
+		m.EditingID = msg.ID
+		m.EditText = msg.Text
+	case EditChanged:
+		m.EditText = msg.Text
+	case SaveEdit:
+		if m.EditingID != msg.ID {
+			return m, nil
+		}
+		id := msg.ID
+		title := m.EditText
+		m.EditingID = 0
+		m.EditText = ""
+		if title == "" {
+			return m, func() gothic.Msg {
+				err := DeleteTodo(id)
+				if err != nil {
+					return TodoFailed{Message: err.Error()}
+				}
+				return loadTodos()
+			}
+		}
+		return m, func() gothic.Msg {
+			err := SetTodoTitle(id, title)
+			if err != nil {
+				return TodoFailed{Message: err.Error()}
+			}
+			return loadTodos()
+		}
+	case CancelEdit:
+		m.EditingID = 0
+		m.EditText = ""
+	case TodosLoaded:
+		m.Todos = msg.Data.Todos
+		m.ActiveCount = msg.Data.ActiveCount
+		m.CompletedCount = msg.Data.CompletedCount
+		m.HasTodos = msg.Data.HasTodos
+		m.HasCompleted = msg.Data.HasCompleted
+		m.AllDone = msg.Data.AllDone
+		m.ItemWord = msg.Data.ItemWord
+		m.Failure = ""
+	case TodoFailed:
+		m.Failure = msg.Message
+	}
+	return m, nil
+}
+
+func loadTodos() gothic.Msg {
+	data, err := ListTodos()
+	if err != nil {
+		return TodoFailed{Message: err.Error()}
+	}
+	return TodosLoaded{Data: data}
+}
+
+view App(model Model) {
+	<section class="todoapp">
+		<header class="header">
+			<h1>todos</h1>
+			<input class="new-todo" placeholder="What needs to be done?" autofocus value={ model.Draft } oninput={ DraftChanged{Text: event.target.value} } onenter={ AddClicked{} } />
+			<p class="error" class:hidden={ model.Failure == "" }>{ model.Failure }</p>
+		</header>
+		<section id="main" class="main" class:hidden={ !model.HasTodos }>
+			<input id="toggle-all" class="toggle-all" type="checkbox" checked={ model.AllDone } onchange={ ToggleAll{Checked: event.target.checked} } />
+			<label for="toggle-all">Mark all as complete</label>
+			<ul class="todo-list">
+				for _, todo := range model.Todos {
+					<TodoItem key={ todo.ID } todo={ todo } filter={ model.Filter } editing={ todo.ID == model.EditingID } editText={ model.EditText } />
+				}
+			</ul>
+		</section>
+		<footer id="footer" class="footer" class:hidden={ !model.HasTodos }>
+			<span class="todo-count"><strong>{ model.ActiveCount }</strong>{ " " }{ model.ItemWord }{ " left" }</span>
+			<ul class="filters">
+				<li><a class:selected={ model.Filter == "all" } href="#/">All</a></li>
+				<li><a class:selected={ model.Filter == "active" } href="#/active">Active</a></li>
+				<li><a class:selected={ model.Filter == "completed" } href="#/completed">Completed</a></li>
+			</ul>
+			<button class="clear-completed" class:hidden={ !model.HasCompleted } onclick={ ClearCompletedClicked{} }>Clear completed</button>
+		</footer>
+	</section>
+}
