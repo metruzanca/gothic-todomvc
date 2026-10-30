@@ -1,12 +1,36 @@
 package app
 
+// TodoItem is a pure component: it renders its props and nothing else. It has
+// no model, no messages of its own, and no state.
+//
+// The compiler inlines components into the caller before generating Go and
+// JavaScript. There is no component instance, no lifecycle, and no hooks. The
+// parameters below become arguments to the generated bindings.
+//
+// "Props changed" therefore means the parent re-ran this markup with new
+// values. In a keyed list the same DOM nodes are reused, and only the affected
+// text, attributes, and classes are written. Change todo.ID and the row is
+// treated as a different row.
+//
+// Events work as they do in App: attributes take a Msg value. Here the payload
+// comes from the props, so the parent Update can find the row.
 view TodoItem(todo Todo, filter string, editing bool, editText string) {
+	// Three independent class toggles. Each adds or removes only its own class,
+	// so completed, editing, and hidden do not interfere with each other.
 	<li class:completed={ todo.Completed } class:editing={ editing } class:hidden={ (filter == "active" && todo.Completed) || (filter == "completed" && !todo.Completed) }>
 		<div class="view">
+			// checked is a DOM property driven by the model. The toggle message
+			// carries the ID, so Update does not need the checkbox element.
 			<input class="toggle" type="checkbox" checked={ todo.Completed } onchange={ ToggleClicked{ID: todo.ID} } />
+			// Double-click sends the current title in the message. Update stores
+			// it in EditText, and that value flows back in through editText.
 			<label ondblclick={ StartEdit{ID: todo.ID, Text: todo.Title} }>{ todo.Title }</label>
+			// The message carries the ID, so DeleteClicked needs no other data.
 			<button class="destroy" onclick={ DeleteClicked{ID: todo.ID} }></button>
 		</div>
+		// One edit input per row, but only the editing row is focused. SaveEdit
+		// fires on blur and on Enter; Escape sends CancelEdit. If CancelEdit ran
+		// first, the later blur is ignored by the guard in Update.
 		<input class="edit" value={ editText } focus={ editing } oninput={ EditChanged{Text: event.target.value} } onblur={ SaveEdit{ID: todo.ID} } onenter={ SaveEdit{ID: todo.ID} } onescape={ CancelEdit{ID: todo.ID} } />
 	</li>
 }

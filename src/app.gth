@@ -1,3 +1,26 @@
+// Package app is the TodoMVC application. It has two halves in one file:
+//
+//   - A normal Go prelude: the Model, the messages, and Update.
+//   - Views in gothic markup: used by Go on the server for the first paint,
+//     and compiled to JavaScript for the browser.
+//
+// The generator reads this file and writes app_gothic.go and app_gothic.js.
+// Do not edit those. Change this file and run "go generate ./src".
+//
+// The app follows The Elm Architecture, the same shape as Bubble Tea:
+//
+//	DOM event -> Msg -> Update -> (new Model, optional Cmd) -> render
+//	                               ^                          |
+//	                               +---------- Msg <----------+
+//
+// If you know React:
+//
+//	Model   is your state
+//	Update  holds every state transition
+//	Msg     is an event value, not a callback
+//	Cmd     is async work, like an effect, that produces another Msg
+//
+// Start at Todo, then Model, then the message types, then Update, then App.
 package app
 
 import (
@@ -6,12 +29,18 @@ import (
 	"github.com/metruzanca/gothic"
 )
 
+// Todo is one row as the server stores it. IDs come from SQLite and are sent
+// to the browser, so the client never invents identity.
 type Todo struct {
 	ID        int64
 	Title     string
 	Completed bool
 }
 
+// TodoData is the snapshot returned by the ListTodos procedure. Counts and
+// flags are computed on the server so the view has nothing to calculate.
+// Several fields exist only to keep the markup simple: HasTodos hides the main
+// section, AllDone drives the "mark all" checkbox, and ItemWord pluralizes.
 type TodoData struct {
 	Todos          []Todo
 	ActiveCount    int
@@ -22,6 +51,11 @@ type TodoData struct {
 	ItemWord       string
 }
 
+// Model is the entire client state. It is a plain value: Update receives one
+// and returns the next one. Nothing mutates shared state behind the scenes.
+//
+// The first half mirrors TodoData and is server truth. The second half is local
+// UI state that never goes to the server.
 type Model struct {
 	Draft          string
 	Todos          []Todo
@@ -31,12 +65,14 @@ type Model struct {
 	HasCompleted   bool
 	AllDone        bool
 	ItemWord       string
-	Filter         string
-	EditingID      int64
-	EditText       string
-	Failure        string
+	Filter         string // "all", "active", or "completed"
+	EditingID      int64  // 0 means no row is being edited
+	EditText       string // draft title for the row being edited
+	Failure        string // last procedure error, shown above the list
 }
 
+// NewModel builds the initial client model from the server snapshot. It runs
+// in Go during the first request, and the result is serialized for the browser.
 func NewModel(data TodoData) Model {
 	return Model{
 		Todos:          data.Todos,
@@ -50,6 +86,17 @@ func NewModel(data TodoData) Model {
 	}
 }
 
+// Messages are the events the app reacts to. Each one is a small Go struct,
+// and the type switch in Update decides what to do with it.
+//
+// The naming convention describes what happened, not what to do: AddClicked,
+// TodosLoaded, TodoFailed. A Msg carries data only, never behavior.
+// gothic.Msg is an alias for any.
+//
+// The view constructs these values directly in event attributes, for example
+// onclick={ DeleteClicked{ID: todo.ID} }. The generator turns that into a
+// dispatch call. That is the biggest difference from React, where a handler is
+// a closure you write.
 type DraftChanged struct{ Text string }
 type AddClicked struct{}
 type ToggleClicked struct{ ID int64 }
@@ -63,10 +110,27 @@ type StartEdit struct {
 type EditChanged struct{ Text string }
 type SaveEdit struct{ ID int64 }
 type CancelEdit struct{ ID int64 }
+
+// Procedure results travel as messages too. A command starts a request, and
+// the result comes back through Update as one of these.
 type TodosLoaded struct{ Data TodoData }
 type TodoFailed struct{ Message string }
+
+// HashChanged comes from the browser, not from a click. The client runtime
+// listens for hashchange and dispatches it.
 type HashChanged struct{ Hash string }
 
+// Procedures is the contract between the browser and the server. Embedding
+// gothic.RPCService marks the interface for code generation.
+//
+// From this interface the generator emits:
+//
+//   - Client stubs such as ListTodos that POST JSON to /_gothic/rpc/ListTodos.
+//   - RegisterProcedures, which adapts the implementation in cmd/todomvc/main.go,
+//     decoding arguments and encoding results and errors.
+//
+// The signatures are the wire format. context.Context is supplied by the server
+// and is not sent by the client. Everything else crosses as JSON.
 type Procedures interface {
 	gothic.RPCService
 	ListTodos(ctx context.Context) (TodoData, error)
@@ -78,13 +142,29 @@ type Procedures interface {
 	ClearCompleted(ctx context.Context) error
 }
 
+// Init runs once when the client boots. Returning loadTodos means the first
+// thing the app does is fetch the current list. It may return nil for "nothing
+// to do".
 func (m Model) Init() gothic.Cmd {
 	return loadTodos
 }
 
+// Update is the only place state changes. It receives the current model and a
+// message, and returns the next model plus an optional command.
+//
+// Two rules keep this easy to reason about:
+//
+//  1. Update is synchronous and free of side effects. It never calls a
+//     procedure itself.
+//  2. Work that talks to the server goes in a Cmd. The command runs after the
+//     model update and sends a new Msg into Update when it finishes.
+//
+// The value receiver means m is a private copy, so it can be changed freely.
 func (m Model) Update(msg gothic.Msg) (gothic.Model, gothic.Cmd) {
 	switch msg := msg.(type) {
 	case HashChanged:
+		// Filtering happens in the browser only. The links in the footer are
+		// plain "#/active" anchors, and the runtime forwards hash changes here.
 		m.Filter = "all"
 		if msg.Hash == "#/active" {
 			m.Filter = "active"
@@ -93,21 +173,32 @@ func (m Model) Update(msg gothic.Msg) (gothic.Model, gothic.Cmd) {
 			m.Filter = "completed"
 		}
 	case DraftChanged:
+		// Typing stays local: record the text and run no command. The input is
+		// controlled by model.Draft on the next render.
 		m.Draft = msg.Text
 	case AddClicked:
+		// Capture what the command needs before returning. The command runs
+		// later, so close over title, not over m.
 		title := m.Draft
 		if title == "" {
 			return m, nil
 		}
+		// Clear the input immediately. The list refreshes when the RPC returns.
 		m.Draft = ""
 		return m, func() gothic.Msg {
 			err := AddTodo(title)
 			if err != nil {
 				return TodoFailed{Message: err.Error()}
 			}
+			// A command may return any Msg. loadTodos is itself a command
+			// function, so this chains another request and ends in either
+			// TodosLoaded or TodoFailed.
 			return loadTodos()
 		}
 	case ToggleClicked:
+		// This is the common shape: take an ID from the message and return a
+		// command that calls a procedure, then reloads the server snapshot.
+		// The view never calls a procedure and never edits the list itself.
 		id := msg.ID
 		return m, func() gothic.Msg {
 			err := ToggleTodo(id)
@@ -117,6 +208,8 @@ func (m Model) Update(msg gothic.Msg) (gothic.Model, gothic.Cmd) {
 			return loadTodos()
 		}
 	case ToggleAll:
+		// The checkbox value arrives in the message because Update has no DOM
+		// access. event.target.checked is read by the generated listener.
 		checked := msg.Checked
 		return m, func() gothic.Msg {
 			err := SetAllCompleted(checked)
@@ -143,11 +236,15 @@ func (m Model) Update(msg gothic.Msg) (gothic.Model, gothic.Cmd) {
 			return loadTodos()
 		}
 	case StartEdit:
+		// Double-clicking a label puts that row into edit mode. EditingID and
+		// EditText are local UI state, so no server call is needed.
 		m.EditingID = msg.ID
 		m.EditText = msg.Text
 	case EditChanged:
 		m.EditText = msg.Text
 	case SaveEdit:
+		// onblur and onenter both send SaveEdit. If CancelEdit already ran, the
+		// row is no longer the editing row and this is a stale event.
 		if m.EditingID != msg.ID {
 			return m, nil
 		}
@@ -156,6 +253,8 @@ func (m Model) Update(msg gothic.Msg) (gothic.Model, gothic.Cmd) {
 		m.EditingID = 0
 		m.EditText = ""
 		if title == "" {
+			// Emptying a title and leaving the field deletes the todo, matching
+			// TodoMVC behavior.
 			return m, func() gothic.Msg {
 				err := DeleteTodo(id)
 				if err != nil {
@@ -175,6 +274,8 @@ func (m Model) Update(msg gothic.Msg) (gothic.Model, gothic.Cmd) {
 		m.EditingID = 0
 		m.EditText = ""
 	case TodosLoaded:
+		// Replace every server-owned field with the new snapshot. Local state
+		// such as the filter and the draft input is deliberately left alone.
 		m.Todos = msg.Data.Todos
 		m.ActiveCount = msg.Data.ActiveCount
 		m.CompletedCount = msg.Data.CompletedCount
@@ -184,11 +285,17 @@ func (m Model) Update(msg gothic.Msg) (gothic.Model, gothic.Cmd) {
 		m.ItemWord = msg.Data.ItemWord
 		m.Failure = ""
 	case TodoFailed:
+		// Procedure errors arrive here instead of crashing the app. The view
+		// shows m.Failure and hides the paragraph while it is empty.
 		m.Failure = msg.Message
 	}
 	return m, nil
 }
 
+// loadTodos is a command: a function that does work and returns a message.
+// The generator compiles this function to JavaScript, where ListTodos is a
+// fetch wrapper. The same Go function is not executed on the server; the server
+// only renders the initial view.
 func loadTodos() gothic.Msg {
 	data, err := ListTodos()
 	if err != nil {
@@ -197,25 +304,67 @@ func loadTodos() gothic.Msg {
 	return TodosLoaded{Data: data}
 }
 
+// App is the root view. It is a function of the model with no hidden state.
+//
+// The generator produces two things from this markup:
+//
+//   - A Go function that writes HTML on the server for the first paint.
+//   - A JavaScript render function that updates the live DOM in the browser.
+//
+// The server also serializes the initial model into a script tag. On load, the
+// client runtime adopts the server HTML, reads that state, binds the event
+// handlers, and from then on calls render(model) after every Update.
+//
+// Rendering is not a virtual DOM diff. The compiler assigns each dynamic piece
+// a marker (text, attribute, class, list), and render writes only to the DOM
+// nodes for those markers. Elements are reused, not recreated.
+//
+// Event attributes take a Msg value, not a callback. This line:
+//
+//	<button onclick={ ClearCompletedClicked{} }>
+//
+// compiles to a listener that calls dispatch({tag: "ClearCompletedClicked"}).
+// When an event needs data, build it into the message:
+//
+//	onchange={ ToggleClicked{ID: todo.ID} }
+//
+// Use event.target only for values that exist solely at event time, such as the
+// text in an input.
 view App(model Model) {
 	<section class="todoapp">
 		<header class="header">
 			<h1>todos</h1>
+			// A controlled input: value comes from the model, and every keystroke
+			// sends DraftChanged. onenter is shorthand for keydown plus Enter.
 			<input class="new-todo" placeholder="What needs to be done?" autofocus value={ model.Draft } oninput={ DraftChanged{Text: event.target.value} } onenter={ AddClicked{} } />
+			// class:hidden toggles one class from the expression. The literal
+			// class="error" is left untouched.
 			<p class="error" class:hidden={ model.Failure == "" }>{ model.Failure }</p>
 		</header>
+		// HasTodos is server-computed. An empty list hides this section with a
+		// class; the elements stay in the DOM.
 		<section id="main" class="main" class:hidden={ !model.HasTodos }>
+			// checked is set as a DOM property so the box reflects the model.
+			// The current box state is read from event.target.checked.
 			<input id="toggle-all" class="toggle-all" type="checkbox" checked={ model.AllDone } onchange={ ToggleAll{Checked: event.target.checked} } />
 			<label for="toggle-all">Mark all as complete</label>
 			<ul class="todo-list">
+				// key is the identity used to reuse DOM nodes. It keeps focus,
+				// selection, and an open edit field stable when rows move or the
+				// filter hides items. Components are inlined at compile time, so
+				// key is the only thing that gives a row persistent identity.
 				for _, todo := range model.Todos {
 					<TodoItem key={ todo.ID } todo={ todo } filter={ model.Filter } editing={ todo.ID == model.EditingID } editText={ model.EditText } />
 				}
 			</ul>
 		</section>
+		// The filters are ordinary hash links. The client listens for hashchange
+		// and sends HashChanged, so no server round trip is needed.
 		<footer id="footer" class="footer" class:hidden={ !model.HasTodos }>
 			<span class="todo-count"><strong>{ model.ActiveCount }</strong>{ " " }{ model.ItemWord }{ " left" }</span>
 			<ul class="filters">
+				// class:selected adds or removes "selected" without rewriting the
+				// anchor's other classes.
 				<li><a class:selected={ model.Filter == "all" } href="#/">All</a></li>
 				<li><a class:selected={ model.Filter == "active" } href="#/active">Active</a></li>
 				<li><a class:selected={ model.Filter == "completed" } href="#/completed">Completed</a></li>

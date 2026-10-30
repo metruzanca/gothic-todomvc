@@ -19,10 +19,23 @@ import (
 //go:embed style.css
 var styleCSS []byte
 
+// This file is the server side of the app. It has three jobs:
+//
+//  1. Persist todos in SQLite.
+//  2. Implement the procedures declared in src/app.gth.
+//  3. Serve the first HTML paint, including the initial model.
+//
+// The UI code lives in src/app.gth, and its comments start the tour. The
+// wiring here assumes that file.
+
+// store is a thin SQLite wrapper. There is no auth and one shared list, which
+// keeps the example focused on gothic instead of tenancy.
 type store struct {
 	db *sql.DB
 }
 
+// openStore opens the database and creates the table on first run. The app uses
+// an in-memory database unless DB_PATH is set.
 func openStore(path string) (*store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -47,6 +60,9 @@ func (s *store) close() error {
 	return s.db.Close()
 }
 
+// list reads the full list and computes the derived fields the view needs. The
+// server owns these counts so the browser never recomputes them after an edit,
+// a filter change, or a reload.
 func (s *store) list(ctx context.Context) (app.TodoData, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, title, completed FROM todos ORDER BY id`)
 	if err != nil {
@@ -99,6 +115,7 @@ func (s *store) add(ctx context.Context, title string) error {
 	return err
 }
 
+// setTitle deletes the row when the new title is blank, matching TodoMVC.
 func (s *store) setTitle(ctx context.Context, id int64, title string) error {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -128,6 +145,14 @@ func (s *store) clearCompleted(ctx context.Context) error {
 	return err
 }
 
+// procedures implements the Procedures interface declared in src/app.gth. The
+// generator produced RegisterProcedures, which adapts these methods to JSON
+// RPC: arguments are decoded, context comes from the request, and a returned
+// error becomes an RPC error.
+//
+// In the browser, an error from one of these methods ends up as TodoFailed,
+// which Update stores in model.Failure. Procedures are never called directly
+// from Update; they are always called inside a Cmd.
 type procedures struct {
 	store *store
 }
@@ -177,17 +202,32 @@ func main() {
 	}
 
 	s := gothic.NewServer()
+	// RegisterProcedures mounts one POST route per procedure under
+	// /_gothic/rpc/. This single call connects the interface in src/app.gth to
+	// the implementation above.
 	app.RegisterProcedures(s, procedures{store: st})
 	mountApp(s, st)
 	log.Fatal(s.ListenAndServe(addr))
 }
 
+// mountApp serves the page. It does not use Server.MountApp because the initial
+// model depends on the database: the page must render with the current todos so
+// the first paint is useful before JavaScript runs.
+//
+// The generated App view writes the markup and appends two things:
+//
+//   - a script tag containing the initial model as JSON
+//   - a module script that loads the generated client code
+//
+// The client runtime reads that JSON, adopts the server-rendered DOM instead of
+// recreating it, binds the event handlers, and starts the Update/render loop.
 func mountApp(s *gothic.Server, st *store) {
 	s.Get("/style.css", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		_, _ = w.Write(styleCSS)
 	})
 	s.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		// Build the initial model from server truth, then render the full page.
 		data, err := st.list(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
