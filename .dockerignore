@@ -1,0 +1,6 @@
+.git
+bin
+todo.db
+todo.db-*
+src/*_gothic.go
+src/*_gothic.js
