@@ -3,22 +3,43 @@
 A standalone copy of the gothic TodoMVC example. It lives outside the core gothic
 repository and imports gothic as a normal Go module.
 
+## Structure
+
+```
+cmd/todomvc/   entrypoint and HTTP server
+src/           .gth app and component sources, plus the generator directive
+Makefile       generate, run, test, and build shortcuts
+```
+
+Generated Go and JavaScript files are not committed. Run the generator before
+building or testing:
+
+```sh
+go generate ./src
+```
+
 ## Run
 
 ```sh
-go generate
-go run .
+make run
+```
+
+Or:
+
+```sh
+go generate ./src
+go run ./cmd/todomvc
 ```
 
 Open <http://localhost:8080>. Set `PORT` to change the port.
 
-The app uses an in-memory SQLite database by default. Set `DB_PATH=/path/to/todo.db`
-to use a file.
+The app uses an in-memory SQLite database by default. Set
+`DB_PATH=/path/to/todo.db` to use a file.
 
 ## Verify
 
 ```sh
-go test ./...
+make test
 ```
 
 ## Dependency

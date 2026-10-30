@@ -1,4 +1,7 @@
 todo.db
 todo.db-*
-
+/bin/
+/todomvc
 /gothic-todomvc
+/src/*_gothic.go
+/src/*_gothic.js

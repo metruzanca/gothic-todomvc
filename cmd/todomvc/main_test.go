@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/metruzanca/gothic"
+	app "github.com/metruzanca/gothic-todomvc/src"
 )
 
 func TestTodoApp(t *testing.T) {
@@ -30,7 +31,7 @@ func TestTodoApp(t *testing.T) {
 	}
 
 	s := gothic.NewServer()
-	RegisterProcedures(s, procedures{store: st})
+	app.RegisterProcedures(s, procedures{store: st})
 	mountApp(s, st)
 	ts := httptest.NewServer(s)
 	defer ts.Close()
@@ -139,13 +140,13 @@ func TestTodoApp(t *testing.T) {
 }
 
 type listResponse struct {
-	Todos          []Todo `json:"Todos"`
-	ActiveCount    int    `json:"ActiveCount"`
-	CompletedCount int    `json:"CompletedCount"`
-	HasTodos       bool   `json:"HasTodos"`
-	HasCompleted   bool   `json:"HasCompleted"`
-	AllDone        bool   `json:"AllDone"`
-	ItemWord       string `json:"ItemWord"`
+	Todos          []app.Todo `json:"Todos"`
+	ActiveCount    int        `json:"ActiveCount"`
+	CompletedCount int        `json:"CompletedCount"`
+	HasTodos       bool       `json:"HasTodos"`
+	HasCompleted   bool       `json:"HasCompleted"`
+	AllDone        bool       `json:"AllDone"`
+	ItemWord       string     `json:"ItemWord"`
 }
 
 func mustList(t *testing.T, base string) listResponse {

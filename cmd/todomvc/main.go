@@ -1,5 +1,3 @@
-//go:generate go run github.com/metruzanca/gothic/cmd/gothic generate .
-
 package main
 
 import (
@@ -14,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/metruzanca/gothic"
+	app "github.com/metruzanca/gothic-todomvc/src"
 	_ "modernc.org/sqlite"
 )
 
@@ -48,21 +47,21 @@ func (s *store) close() error {
 	return s.db.Close()
 }
 
-func (s *store) list(ctx context.Context) (TodoData, error) {
+func (s *store) list(ctx context.Context) (app.TodoData, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, title, completed FROM todos ORDER BY id`)
 	if err != nil {
-		return TodoData{}, err
+		return app.TodoData{}, err
 	}
 	defer rows.Close()
 
-	todos := make([]Todo, 0)
+	todos := make([]app.Todo, 0)
 	active := 0
 	completed := 0
 	for rows.Next() {
-		var todo Todo
+		var todo app.Todo
 		var done int
 		if err := rows.Scan(&todo.ID, &todo.Title, &done); err != nil {
-			return TodoData{}, err
+			return app.TodoData{}, err
 		}
 		todo.Completed = done != 0
 		if todo.Completed {
@@ -73,14 +72,14 @@ func (s *store) list(ctx context.Context) (TodoData, error) {
 		todos = append(todos, todo)
 	}
 	if err := rows.Err(); err != nil {
-		return TodoData{}, err
+		return app.TodoData{}, err
 	}
 
 	word := "items"
 	if active == 1 {
 		word = "item"
 	}
-	return TodoData{
+	return app.TodoData{
 		Todos:          todos,
 		ActiveCount:    active,
 		CompletedCount: completed,
@@ -133,7 +132,7 @@ type procedures struct {
 	store *store
 }
 
-func (p procedures) ListTodos(ctx context.Context) (TodoData, error) {
+func (p procedures) ListTodos(ctx context.Context) (app.TodoData, error) {
 	return p.store.list(ctx)
 }
 
@@ -178,7 +177,7 @@ func main() {
 	}
 
 	s := gothic.NewServer()
-	RegisterProcedures(s, procedures{store: st})
+	app.RegisterProcedures(s, procedures{store: st})
 	mountApp(s, st)
 	log.Fatal(s.ListenAndServe(addr))
 }
@@ -196,7 +195,7 @@ func mountApp(s *gothic.Server, st *store) {
 		}
 		var page bytes.Buffer
 		page.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Gothic TodoMVC</title><link rel="stylesheet" href="/style.css"></head><body>`)
-		if err := gothic.NewApp(NewModel(data)).RenderTo(r.Context(), &page); err != nil {
+		if err := gothic.NewApp(app.NewModel(data)).RenderTo(r.Context(), &page); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

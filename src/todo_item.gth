@@ -1,4 +1,4 @@
-package main
+package app
 
 view TodoItem(todo Todo, filter string, editing bool, editText string) {
 	<li class:completed={ todo.Completed } class:editing={ editing } class:hidden={ (filter == "active" && todo.Completed) || (filter == "completed" && !todo.Completed) }>
