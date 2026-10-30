@@ -6,8 +6,5 @@ generate:
 run: generate
 	go run ./cmd/todomvc
 
-test: generate
-	go test ./...
-
 build: generate
 	go build -o bin/todomvc ./cmd/todomvc
